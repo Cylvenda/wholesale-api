@@ -19,7 +19,14 @@ from apps.payments.models import Payment
 @permission_classes([IsAuthenticated])
 def dashboard_stats(request):
     now = timezone.now()
-    week_ago = now - timedelta(days=7)
+    period = request.query_params.get("period", "7d")
+
+    if period == "30d":
+        week_ago = now - timedelta(days=30)
+    elif period == "all":
+        week_ago = now - timedelta(days=365 * 10)
+    else:
+        week_ago = now - timedelta(days=7)
 
     total_products = Product.objects.count()
     stock_units = Stock.objects.aggregate(total=Sum("quantity"))["total"] or 0
