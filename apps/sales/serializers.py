@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Sum
 from rest_framework import serializers
 
 from config.serializers import BaseSerializer
@@ -39,12 +40,21 @@ class SaleSerializer(BaseSerializer):
     items = SaleItemSerializer(many=True)
     customer = serializers.SlugRelatedField(slug_field="uuid", queryset=Customer.objects.all())
     customer_name = serializers.CharField(source="customer.name", read_only=True)
+    paid_amount = serializers.SerializerMethodField()
+    outstanding_balance = serializers.SerializerMethodField()
 
     class Meta:
         model = Sale
         fields = ["uuid", "customer", "customer_name", "status", "payment_status", "sale_date", "subtotal", "discount", "total",
-            "notes", "items", "created_at", ]
-        read_only_fields = ["uuid", "status", "subtotal", "total", "payment_status", "created_at", ]
+            "notes", "items", "created_at", "paid_amount", "outstanding_balance", ]
+        read_only_fields = ["uuid", "status", "subtotal", "total", "payment_status", "created_at", "paid_amount", "outstanding_balance", "notes"]
+
+    def get_paid_amount(self, obj):
+        return str(obj.payments.aggregate(total=Sum("amount"))["total"] or 0)
+
+    def get_outstanding_balance(self, obj):
+        paid = obj.payments.aggregate(total=Sum("amount"))["total"] or 0
+        return str(obj.total - paid)
 
     def validate_discount(self, value):
         if value < 0:

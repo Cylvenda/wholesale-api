@@ -32,6 +32,10 @@ def dashboard_stats(request):
         status=Purchase.Status.DRAFT
     ).count()
 
+    purchases_value = Purchase.objects.filter(
+        status=Purchase.Status.COMPLETED
+    ).aggregate(total=Sum("total"))["total"] or 0
+
     low_stock_items = Stock.objects.filter(quantity__gt=0, quantity__lt=10).count()
     out_of_stock_items = Stock.objects.filter(quantity=0).count()
 
@@ -50,18 +54,40 @@ def dashboard_stats(request):
         .order_by("day")
     )
 
+    purchases_by_day = (
+        Purchase.objects.filter(
+            status=Purchase.Status.COMPLETED,
+            purchase_date__gte=week_ago,
+        )
+        .extra({"day": "date(purchase_date)"})
+        .values("day")
+        .annotate(amount=Sum("total"))
+        .order_by("day")
+    )
+
+    sales_map = {}
+    for entry in sales_by_day:
+        day_key = entry["day"]
+        if hasattr(day_key, "isoformat"):
+            day_key = day_key.isoformat()
+        sales_map[str(day_key)] = float(entry["amount"] or 0)
+
+    purchases_map = {}
+    for entry in purchases_by_day:
+        day_key = entry["day"]
+        if hasattr(day_key, "isoformat"):
+            day_key = day_key.isoformat()
+        purchases_map[str(day_key)] = float(entry["amount"] or 0)
+
     chart_data = []
     current = week_ago
-    day_map = {}
-    for entry in sales_by_day:
-        day_map[entry["day"]] = float(entry["amount"] or 0)
-
     while current <= now:
         day_str = current.date().isoformat()
         chart_data.append({
             "day": current.strftime("%a"),
             "date": day_str,
-            "amount": day_map.get(day_str, 0),
+            "amount": sales_map.get(day_str, 0),
+            "purchases": purchases_map.get(day_str, 0),
         })
         current += timedelta(days=1)
 
@@ -69,6 +95,7 @@ def dashboard_stats(request):
         "total_products": total_products,
         "stock_units": stock_units,
         "sales_value": sales_value,
+        "purchases_value": purchases_value,
         "draft_purchases": draft_purchases,
         "low_stock_items": low_stock_items,
         "out_of_stock_items": out_of_stock_items,
