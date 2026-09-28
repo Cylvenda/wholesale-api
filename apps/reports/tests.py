@@ -43,7 +43,7 @@ class ReceiptAPITests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(self.user)
 
-    def test_completed_sale_receipt_uses_sequential_number_and_allocated_discount(self):
+    def test_completed_sale_receipt_uses_sequential_number_and_bill_discount(self):
         sale = Sale.objects.create(
             customer=self.customer,
             sale_date=timezone.now(),
@@ -68,8 +68,9 @@ class ReceiptAPITests(TestCase):
         receipt = response.data["data"]
         self.assertEqual(receipt["sale"]["receipt_number"], f"SAL-{sale.pk:06d}")
         self.assertEqual(receipt["items"][0]["unit"], "PC")
-        self.assertEqual(receipt["items"][0]["discount"], Decimal("2.00"))
-        self.assertEqual(receipt["items"][0]["line_total"], Decimal("18.00"))
+        self.assertNotIn("discount", receipt["items"][0])
+        self.assertEqual(receipt["items"][0]["line_total"], Decimal("20.00"))
+        self.assertEqual(receipt["totals"]["discount"], Decimal("2.00"))
 
     def test_completed_purchase_receipt_contains_received_goods(self):
         purchase = Purchase.objects.create(

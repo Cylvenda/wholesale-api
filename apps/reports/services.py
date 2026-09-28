@@ -363,7 +363,6 @@ def build_receipt_data(sale):
     )
     payment_summary = get_payment_summary(sale)
     business = get_active_business_details()
-    discounts = allocate_discount(items, sale.discount)
     return {
         "business": {
             "name": business.name if business else "IMARA SHOP",
@@ -391,10 +390,9 @@ def build_receipt_data(sale):
                 "unit": item["product__unit__abbreviation"]
                 or item["product__unit__name"],
                 "unit_price": item["unit_price"],
-                "discount": item_discount,
-                "line_total": item["subtotal"] - item_discount,
+                "line_total": item["subtotal"],
             }
-            for item, item_discount in zip(items, discounts)
+            for item in items
         ],
         "totals": {
             "subtotal": sale.subtotal,
@@ -439,7 +437,6 @@ def build_purchase_receipt_data(purchase):
                 "quantity": item.quantity,
                 "unit": item.product.unit.abbreviation or item.product.unit.name,
                 "unit_price": item.unit_cost,
-                "discount": Decimal("0.00"),
                 "line_total": item.subtotal,
             }
             for item in items
