@@ -2,6 +2,7 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from html import escape
 from io import BytesIO
+import textwrap
 from uuid import UUID
 
 from django.db.models import Prefetch
@@ -10,12 +11,20 @@ from django.utils import timezone
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from reportlab.lib.units import mm
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib.units import mm
-from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.pdfgen import canvas
+from reportlab.platypus import (
+    HRFlowable,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 from rest_framework.exceptions import ValidationError
 
 from .models import BusinessDetails
@@ -24,7 +33,6 @@ from ..products.models import Product
 from ..purchases.models import Purchase, PurchaseItem
 from ..sales.models import Sale, SaleItem
 from ..suppliers.models import Supplier
-
 
 MONEY_FORMAT = "#,##0.00"
 DATE_FORMAT = "yyyy-mm-dd"
@@ -45,12 +53,16 @@ def parse_report_date(value, field_name):
     try:
         return date.fromisoformat(str(value))
     except (TypeError, ValueError) as exc:
-        raise ValidationError({field_name: "Use a valid date in YYYY-MM-DD format."}) from exc
+        raise ValidationError(
+            {field_name: "Use a valid date in YYYY-MM-DD format."}
+        ) from exc
 
 
 def validate_date_range(from_date, to_date):
     if from_date and to_date and from_date > to_date:
-        raise ValidationError({"from": "The from date must be on or before the to date."})
+        raise ValidationError(
+            {"from": "The from date must be on or before the to date."}
+        )
 
 
 def validate_uuid(value, field_name, model):
@@ -108,9 +120,13 @@ def style_worksheet(worksheet):
             cell.alignment = Alignment(vertical="top", wrap_text=True)
 
     for column_cells in worksheet.columns:
-        values = [str(cell.value) if cell.value is not None else "" for cell in column_cells]
+        values = [
+            str(cell.value) if cell.value is not None else "" for cell in column_cells
+        ]
         width = min(max(len(value) for value in values) + 2, 48)
-        worksheet.column_dimensions[get_column_letter(column_cells[0].column)].width = max(width, 12)
+        worksheet.column_dimensions[get_column_letter(column_cells[0].column)].width = (
+            max(width, 12)
+        )
 
 
 def save_workbook(workbook):
@@ -150,7 +166,9 @@ def allocate_discount(items, discount):
     allocations = []
     allocated = Decimal("0.00")
     for item in items[:-1]:
-        amount = (discount * get_subtotal(item) / subtotal).quantize(CENT, rounding=ROUND_HALF_UP)
+        amount = (discount * get_subtotal(item) / subtotal).quantize(
+            CENT, rounding=ROUND_HALF_UP
+        )
         amount = min(amount, discount - allocated)
         allocations.append(amount)
         allocated += amount
@@ -159,17 +177,20 @@ def allocate_discount(items, discount):
     return allocations
 
 
-def build_purchases_excel(*, from_date=None, to_date=None, product_uuid=None, supplier_uuid=None):
+def build_purchases_excel(
+    *, from_date=None, to_date=None, product_uuid=None, supplier_uuid=None
+):
     from_date = parse_report_date(from_date, "from")
     to_date = parse_report_date(to_date, "to")
     product_id = validate_uuid(product_uuid, "product", Product)
     supplier_id = validate_uuid(supplier_uuid, "supplier", Supplier)
     start, end = timezone_bounds(from_date, to_date)
 
-    items = PurchaseItem.objects.select_related("product").order_by("purchase__purchase_date", "pk")
+    items = PurchaseItem.objects.select_related("product").order_by(
+        "purchase__purchase_date", "pk"
+    )
     purchases = (
-        Purchase.objects
-        .filter(status=Purchase.Status.COMPLETED)
+        Purchase.objects.filter(status=Purchase.Status.COMPLETED)
         .select_related("supplier")
         .prefetch_related(Prefetch("items", queryset=items, to_attr="report_items"))
         .order_by("purchase_date", "pk")
@@ -187,38 +208,46 @@ def build_purchases_excel(*, from_date=None, to_date=None, product_uuid=None, su
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "Purchased Items"
-    worksheet.append([
-        "Date",
-        "Purchase No",
-        "Supplier",
-        "Product",
-        "Quantity",
-        "Unit Cost",
-        "Total",
-    ])
+    worksheet.append(
+        [
+            "Date",
+            "Purchase No",
+            "Supplier",
+            "Product",
+            "Quantity",
+            "Unit Cost",
+            "Total",
+        ]
+    )
 
     for purchase in purchases:
         purchase_number = purchase.invoice_number or f"PUR-{purchase.uuid}"
         for item in purchase.report_items:
-            worksheet.append([
-                timezone.localtime(purchase.purchase_date).date(),
-                purchase_number,
-                purchase.supplier.name,
-                item.product.name,
-                item.quantity,
-                item.unit_cost,
-                item.subtotal,
-            ])
+            worksheet.append(
+                [
+                    timezone.localtime(purchase.purchase_date).date(),
+                    purchase_number,
+                    purchase.supplier.name,
+                    item.product.name,
+                    item.quantity,
+                    item.unit_cost,
+                    item.subtotal,
+                ]
+            )
             worksheet.cell(worksheet.max_row, 1).number_format = DATE_FORMAT
             worksheet.cell(worksheet.max_row, 5).number_format = "0"
             worksheet.cell(worksheet.max_row, 6).number_format = MONEY_FORMAT
             worksheet.cell(worksheet.max_row, 7).number_format = MONEY_FORMAT
 
     style_worksheet(worksheet)
-    return excel_response(workbook, report_filename("purchased-items", from_date, to_date))
+    return excel_response(
+        workbook, report_filename("purchased-items", from_date, to_date)
+    )
 
 
-def build_sales_excel(*, from_date=None, to_date=None, product_uuid=None, customer_uuid=None):
+def build_sales_excel(
+    *, from_date=None, to_date=None, product_uuid=None, customer_uuid=None
+):
     from_date = parse_report_date(from_date, "from")
     to_date = parse_report_date(to_date, "to")
     product_id = validate_uuid(product_uuid, "product", Product)
@@ -227,8 +256,7 @@ def build_sales_excel(*, from_date=None, to_date=None, product_uuid=None, custom
 
     items = SaleItem.objects.select_related("product").order_by("sale__sale_date", "pk")
     sales = (
-        Sale.objects
-        .filter(status=Sale.Status.COMPLETED)
+        Sale.objects.filter(status=Sale.Status.COMPLETED)
         .select_related("customer")
         .prefetch_related(Prefetch("items", queryset=items, to_attr="report_items"))
         .order_by("sale_date", "pk")
@@ -246,49 +274,59 @@ def build_sales_excel(*, from_date=None, to_date=None, product_uuid=None, custom
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "Completed Sales"
-    worksheet.append([
-        "Date",
-        "Receipt No",
-        "Customer",
-        "Product",
-        "Quantity",
-        "Unit Price",
-        "Discount",
-        "Total",
-    ])
+    worksheet.append(
+        [
+            "Date",
+            "Receipt No",
+            "Customer",
+            "Product",
+            "Quantity",
+            "Unit Price",
+            "Discount",
+            "Total",
+        ]
+    )
 
     for sale in sales:
         receipt_number = f"SAL-{sale.uuid}"
         discounts = allocate_discount(sale.report_items, sale.discount)
         for item, line_discount in zip(sale.report_items, discounts):
-            worksheet.append([
-                timezone.localtime(sale.sale_date).date(),
-                receipt_number,
-                sale.customer.name,
-                item.product.name,
-                item.quantity,
-                item.unit_price,
-                line_discount,
-                item.subtotal - line_discount,
-            ])
+            worksheet.append(
+                [
+                    timezone.localtime(sale.sale_date).date(),
+                    receipt_number,
+                    sale.customer.name,
+                    item.product.name,
+                    item.quantity,
+                    item.unit_price,
+                    line_discount,
+                    item.subtotal - line_discount,
+                ]
+            )
             worksheet.cell(worksheet.max_row, 1).number_format = DATE_FORMAT
             worksheet.cell(worksheet.max_row, 5).number_format = "0"
             for column in (6, 7, 8):
                 worksheet.cell(worksheet.max_row, column).number_format = MONEY_FORMAT
 
     style_worksheet(worksheet)
-    return excel_response(workbook, report_filename("completed-sales", from_date, to_date))
+    return excel_response(
+        workbook, report_filename("completed-sales", from_date, to_date)
+    )
 
 
 def get_active_business_details():
-    return BusinessDetails.objects.filter(is_active=True).select_related("created_by").first()
+    return (
+        BusinessDetails.objects.filter(is_active=True)
+        .select_related("created_by")
+        .first()
+    )
 
 
 def get_payment_summary(sale):
     payments = list(
-        sale.payments
-        .order_by("payment_date", "pk")
-        .values("uuid", "amount", "method", "reference", "payment_date")
+        sale.payments.order_by("payment_date", "pk").values(
+            "uuid", "amount", "method", "reference", "payment_date"
+        )
     )
     paid_amount = sum((payment["amount"] for payment in payments), Decimal("0.00"))
 
@@ -311,12 +349,13 @@ def get_payment_summary(sale):
 
 def build_receipt_data(sale):
     items = list(
-        sale.items
-        .select_related("product")
+        sale.items.select_related("product__unit")
         .order_by("created_at", "pk")
         .values(
             "uuid",
             "product__name",
+            "product__unit__name",
+            "product__unit__abbreviation",
             "quantity",
             "unit_price",
             "subtotal",
@@ -324,6 +363,7 @@ def build_receipt_data(sale):
     )
     payment_summary = get_payment_summary(sale)
     business = get_active_business_details()
+    discounts = allocate_discount(items, sale.discount)
     return {
         "business": {
             "name": business.name if business else "IMARA SHOP",
@@ -331,11 +371,13 @@ def build_receipt_data(sale):
             "phone": business.phone if business else "",
             "email": business.email if business else "",
             "tax_number": business.tax_number if business else "",
-            "receipt_footer": business.receipt_footer if business else "Thank you for your business.",
+            "receipt_footer": (
+                business.receipt_footer if business else "Thank you for your business."
+            ),
         },
         "sale": {
             "uuid": str(sale.uuid),
-            "receipt_number": f"SAL-{sale.uuid}",
+            "receipt_number": f"SAL-{sale.pk:06d}",
             "sale_date": timezone.localtime(sale.sale_date).isoformat(),
             "cashier": sale.created_by.full_name or sale.created_by.email,
             "customer": sale.customer.name,
@@ -346,11 +388,13 @@ def build_receipt_data(sale):
                 "uuid": str(item["uuid"]),
                 "product_name": item["product__name"],
                 "quantity": item["quantity"],
+                "unit": item["product__unit__abbreviation"]
+                or item["product__unit__name"],
                 "unit_price": item["unit_price"],
-                "discount": Decimal("0.00"),
-                "line_total": item["subtotal"],
+                "discount": item_discount,
+                "line_total": item["subtotal"] - item_discount,
             }
-            for item in items
+            for item, item_discount in zip(items, discounts)
         ],
         "totals": {
             "subtotal": sale.subtotal,
@@ -365,12 +409,55 @@ def build_receipt_data(sale):
     }
 
 
+def build_purchase_receipt_data(purchase):
+    items = list(
+        purchase.items.select_related("product__unit").order_by("created_at", "pk")
+    )
+    business = get_active_business_details()
+    subtotal = sum((item.subtotal for item in items), Decimal("0.00"))
+    return {
+        "business": {
+            "name": business.name if business else "IMARA SHOP",
+            "address": business.address if business else "",
+            "phone": business.phone if business else "",
+            "email": business.email if business else "",
+            "tax_number": business.tax_number if business else "",
+            "receipt_footer": business.receipt_footer if business else "",
+        },
+        "purchase": {
+            "uuid": str(purchase.uuid),
+            "receipt_number": f"PUR-{purchase.pk:06d}",
+            "supplier_invoice_number": purchase.invoice_number,
+            "purchase_date": timezone.localtime(purchase.purchase_date).isoformat(),
+            "receiver": purchase.created_by.full_name or purchase.created_by.email,
+            "supplier": purchase.supplier.name,
+        },
+        "items": [
+            {
+                "uuid": str(item.uuid),
+                "product_name": item.product.name,
+                "quantity": item.quantity,
+                "unit": item.product.unit.abbreviation or item.product.unit.name,
+                "unit_price": item.unit_cost,
+                "discount": Decimal("0.00"),
+                "line_total": item.subtotal,
+            }
+            for item in items
+        ],
+        "totals": {
+            "subtotal": subtotal,
+            "grand_total": purchase.total,
+        },
+        "currency": "TZS",
+    }
+
+
 def html_text(value):
     return escape(str(value), quote=True)
 
 
 def money(value):
-    return f"{Decimal(value):.2f}"
+    return f"{Decimal(value):,.2f}"
 
 
 def receipt_money(value):
@@ -391,40 +478,89 @@ def build_receipt_pdf(receipt):
         author=receipt["business"]["name"],
     )
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(
-        name="ReceiptTitle", parent=styles["Heading1"], fontName="Helvetica-Bold",
-        fontSize=21, leading=26, textColor=colors.HexColor("#172554"), spaceAfter=3,
-    ))
-    styles.add(ParagraphStyle(
-        name="ReceiptLabel", parent=styles["Normal"], fontName="Helvetica-Bold",
-        fontSize=8, leading=10, textColor=colors.HexColor("#64748B"), uppercase=True,
-    ))
-    styles.add(ParagraphStyle(
-        name="ReceiptValue", parent=styles["Normal"], fontSize=10, leading=14,
-        textColor=colors.HexColor("#0F172A"),
-    ))
-    styles.add(ParagraphStyle(
-        name="ReceiptRight", parent=styles["Normal"], fontSize=9, leading=12,
-        alignment=TA_RIGHT, textColor=colors.HexColor("#334155"),
-    ))
-    styles.add(ParagraphStyle(
-        name="ReceiptCenter", parent=styles["Normal"], fontSize=9, leading=13,
-        alignment=TA_CENTER, textColor=colors.HexColor("#64748B"),
-    ))
+    styles.add(
+        ParagraphStyle(
+            name="ReceiptTitle",
+            parent=styles["Heading1"],
+            fontName="Helvetica-Bold",
+            fontSize=21,
+            leading=26,
+            textColor=colors.HexColor("#172554"),
+            spaceAfter=3,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="ReceiptLabel",
+            parent=styles["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=8,
+            leading=10,
+            textColor=colors.HexColor("#64748B"),
+            uppercase=True,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="ReceiptValue",
+            parent=styles["Normal"],
+            fontSize=10,
+            leading=14,
+            textColor=colors.HexColor("#0F172A"),
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="ReceiptRight",
+            parent=styles["Normal"],
+            fontSize=9,
+            leading=12,
+            alignment=TA_RIGHT,
+            textColor=colors.HexColor("#334155"),
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="ReceiptCenter",
+            parent=styles["Normal"],
+            fontSize=9,
+            leading=13,
+            alignment=TA_CENTER,
+            textColor=colors.HexColor("#64748B"),
+        )
+    )
 
     business = receipt["business"]
     sale = receipt["sale"]
     totals = receipt["totals"]
-    sale_date = timezone.localtime(datetime.fromisoformat(sale["sale_date"])).strftime("%d %b %Y, %H:%M")
-    payment_methods = ", ".join(method.replace("_", " ").title() for method in receipt["payment_methods"]) or "Not recorded"
+    sale_date = timezone.localtime(datetime.fromisoformat(sale["sale_date"])).strftime(
+        "%d %b %Y, %H:%M"
+    )
+    payment_methods = (
+        ", ".join(
+            method.replace("_", " ").title() for method in receipt["payment_methods"]
+        )
+        or "Not recorded"
+    )
     story = [
         Paragraph("SALE RECEIPT", styles["ReceiptLabel"]),
         Paragraph(html_text(business["name"]), styles["ReceiptTitle"]),
     ]
-    business_lines = [business["address"], business["phone"], business["email"], business["tax_number"]]
+    business_lines = [
+        business["address"],
+        business["phone"],
+        business["email"],
+        business["tax_number"],
+    ]
     for line in filter(None, business_lines):
         story.append(Paragraph(html_text(line), styles["ReceiptValue"]))
-    story.extend([Spacer(1, 5 * mm), HRFlowable(width="100%", thickness=0.7, color=colors.HexColor("#CBD5E1")), Spacer(1, 4 * mm)])
+    story.extend(
+        [
+            Spacer(1, 5 * mm),
+            HRFlowable(width="100%", thickness=0.7, color=colors.HexColor("#CBD5E1")),
+            Spacer(1, 4 * mm),
+        ]
+    )
 
     metadata = [
         ("Receipt number", sale["receipt_number"]),
@@ -438,68 +574,212 @@ def build_receipt_pdf(receipt):
     for label, value in metadata:
         metadata_cells.append(Paragraph(html_text(label), styles["ReceiptLabel"]))
         metadata_cells.append(Paragraph(html_text(value), styles["ReceiptValue"]))
-    metadata_table = Table([metadata_cells[:4], metadata_cells[4:8], metadata_cells[8:]], colWidths=[27 * mm, 58 * mm, 27 * mm, 58 * mm])
-    metadata_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
-        ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#E2E8F0")),
-        ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-    ]))
+    metadata_table = Table(
+        [metadata_cells[:4], metadata_cells[4:8], metadata_cells[8:]],
+        colWidths=[27 * mm, 58 * mm, 27 * mm, 58 * mm],
+    )
+    metadata_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#E2E8F0")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
     story.extend([metadata_table, Spacer(1, 7 * mm)])
 
     item_rows = [["Item", "Qty", "Unit price", "Line total"]]
     for item in receipt["items"]:
-        item_rows.append([
-            Paragraph(html_text(item["product_name"]), styles["ReceiptValue"]),
-            str(item["quantity"]), receipt_money(item["unit_price"]),
-            receipt_money(item["line_total"]),
-        ])
-    item_table = Table(item_rows, colWidths=[85 * mm, 22 * mm, 38 * mm, 45 * mm], repeatRows=1)
-    item_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1D4ED8")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 8),
-        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
-        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-        ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
-    ]))
+        item_rows.append(
+            [
+                Paragraph(html_text(item["product_name"]), styles["ReceiptValue"]),
+                str(item["quantity"]),
+                receipt_money(item["unit_price"]),
+                receipt_money(item["line_total"]),
+            ]
+        )
+    item_table = Table(
+        item_rows, colWidths=[85 * mm, 22 * mm, 38 * mm, 45 * mm], repeatRows=1
+    )
+    item_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1D4ED8")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 8),
+                ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 7),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ]
+        )
+    )
     story.extend([item_table, Spacer(1, 6 * mm)])
 
-    total_rows = [["Subtotal", receipt_money(totals["subtotal"])], ["Discount", receipt_money(totals["discount"])], ["Grand total", receipt_money(totals["grand_total"])], ["Amount paid", receipt_money(totals["amount_paid"])], ["Balance", receipt_money(totals["outstanding_balance"])]]
+    total_rows = [
+        ["Subtotal", receipt_money(totals["subtotal"])],
+        ["Discount", receipt_money(totals["discount"])],
+        ["Grand total", receipt_money(totals["grand_total"])],
+        ["Amount paid", receipt_money(totals["amount_paid"])],
+        ["Balance", receipt_money(totals["outstanding_balance"])],
+    ]
     total_table = Table(total_rows, colWidths=[37 * mm, 42 * mm], hAlign="RIGHT")
-    total_table.setStyle(TableStyle([
-        ("ALIGN", (1, 0), (1, -1), "RIGHT"), ("FONTNAME", (0, 2), (-1, 2), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 2), (-1, 2), 12), ("BACKGROUND", (0, 2), (-1, 2), colors.HexColor("#DBEAFE")),
-        ("LINEABOVE", (0, 2), (-1, 2), 0.7, colors.HexColor("#93C5FD")),
-        ("LINEBELOW", (0, 2), (-1, 2), 0.7, colors.HexColor("#93C5FD")),
-        ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-    ]))
+    total_table.setStyle(
+        TableStyle(
+            [
+                ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+                ("FONTNAME", (0, 2), (-1, 2), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 2), (-1, 2), 12),
+                ("BACKGROUND", (0, 2), (-1, 2), colors.HexColor("#DBEAFE")),
+                ("LINEABOVE", (0, 2), (-1, 2), 0.7, colors.HexColor("#93C5FD")),
+                ("LINEBELOW", (0, 2), (-1, 2), 0.7, colors.HexColor("#93C5FD")),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
     story.extend([total_table, Spacer(1, 7 * mm)])
 
     if receipt["payments"]:
         story.append(Paragraph("PAYMENTS", styles["ReceiptLabel"]))
         payment_rows = [["Method", "Reference", "Date", "Amount"]]
         for payment in receipt["payments"]:
-            payment_rows.append([
-                payment["method"].replace("_", " ").title(), payment["reference"] or "-",
-                timezone.localtime(datetime.fromisoformat(payment["payment_date"])).strftime("%d %b %Y"),
-                receipt_money(payment["amount"]),
-            ])
-        payment_table = Table(payment_rows, colWidths=[40 * mm, 65 * mm, 38 * mm, 40 * mm], repeatRows=1)
-        payment_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F5F9")), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")), ("ALIGN", (3, 0), (3, -1), "RIGHT"),
-            ("TOPPADDING", (0, 0), (-1, -1), 6), ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ]))
+            payment_rows.append(
+                [
+                    payment["method"].replace("_", " ").title(),
+                    payment["reference"] or "-",
+                    timezone.localtime(
+                        datetime.fromisoformat(payment["payment_date"])
+                    ).strftime("%d %b %Y"),
+                    receipt_money(payment["amount"]),
+                ]
+            )
+        payment_table = Table(
+            payment_rows, colWidths=[40 * mm, 65 * mm, 38 * mm, 40 * mm], repeatRows=1
+        )
+        payment_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
+                    ("ALIGN", (3, 0), (3, -1), "RIGHT"),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ]
+            )
+        )
         story.extend([Spacer(1, 3 * mm), payment_table, Spacer(1, 7 * mm)])
 
-    story.extend([HRFlowable(width="100%", thickness=0.7, color=colors.HexColor("#CBD5E1")), Spacer(1, 4 * mm), Paragraph(html_text(business["receipt_footer"] or "Thank you for your business."), styles["ReceiptCenter"])])
+    story.extend(
+        [
+            HRFlowable(width="100%", thickness=0.7, color=colors.HexColor("#CBD5E1")),
+            Spacer(1, 4 * mm),
+            Paragraph(
+                html_text(business["receipt_footer"] or "Thank you for your business."),
+                styles["ReceiptCenter"],
+            ),
+        ]
+    )
     document.build(story)
+    output.seek(0)
+    return output
+
+
+def build_thermal_receipt_pdf(receipt):
+    output = BytesIO()
+    document_record = receipt.get("sale") or receipt["purchase"]
+    is_sale = "sale" in receipt
+    business = receipt["business"]
+    totals = receipt["totals"]
+    transaction_date = (
+        document_record["sale_date"] if is_sale else document_record["purchase_date"]
+    )
+    lines = ["Invoice" if is_sale else "Purchase", "-- Reprint Receipt --"]
+
+    def add_wrapped(value, width=48):
+        lines.extend(textwrap.wrap(str(value), width=width) or [""])
+
+    add_wrapped(business["name"])
+    for value in (
+        business["tax_number"],
+        business["address"],
+        business["phone"],
+        business["email"],
+    ):
+        if value:
+            add_wrapped(value)
+    separator = "-" * 48
+    lines.append(separator)
+    date_label = timezone.localtime(datetime.fromisoformat(transaction_date)).strftime(
+        "%d/%m/%Y %H:%M:%S"
+    )
+    metadata = [
+        ("Document No.", document_record["receipt_number"]),
+        ("Date", date_label),
+        ("Currency", receipt["currency"]),
+        (
+            ("Customer", document_record["customer"])
+            if is_sale
+            else ("Supplier", document_record["supplier"])
+        ),
+        (
+            ("Cashier", document_record["cashier"])
+            if is_sale
+            else ("Received By", document_record["receiver"])
+        ),
+    ]
+    if not is_sale and document_record["supplier_invoice_number"]:
+        metadata.append(
+            ("Supplier Invoice", document_record["supplier_invoice_number"])
+        )
+    for label, value in metadata:
+        add_wrapped(f"{label:<15}{value}")
+    lines.extend([separator, "DESC                 U.PRICE    DISC     AMOUNT", "QTY"])
+    for item in receipt["items"]:
+        add_wrapped(item["product_name"])
+        quantity = f"{item['quantity']:,.2f} {item['unit']}"
+        amount_line = (
+            f"{quantity:>13} {money(item['unit_price']):>9} "
+            f"{money(item['discount']):>7} {money(item['line_total']):>9}"
+        )
+        add_wrapped(amount_line)
+    lines.append(separator)
+    lines.append(f"{'Sub Total:':>35} {money(totals['subtotal']):>12}")
+    if is_sale:
+        lines.append(f"{'Discount:':>35} {money(totals['discount']):>12}")
+        lines.append(f"{'Total:':>35} {money(totals['grand_total']):>12}")
+        for payment in receipt["payments"]:
+            method = payment["method"].replace("_", " ").title()
+            lines.append(f"{method:<25} {money(payment['amount']):>22}")
+        lines.append(f"{'Paid:':>35} {money(totals['amount_paid']):>12}")
+        lines.append(f"{'Balance:':>35} {money(totals['outstanding_balance']):>12}")
+    else:
+        lines.append(f"{'Total Purchase:':>35} {money(totals['grand_total']):>12}")
+    lines.extend([separator, "Thank You" if is_sale else "GOODS RECEIVED"])
+    if business["receipt_footer"]:
+        add_wrapped(business["receipt_footer"])
+
+    page_height = max(100, len(lines) * 10 + 24)
+    receipt_canvas = canvas.Canvas(output, pagesize=(80 * mm, page_height))
+    receipt_canvas.setTitle(f"Receipt {document_record['receipt_number']}")
+    receipt_canvas.setAuthor(business["name"])
+    receipt_canvas.setFont("Courier", 7)
+    y = page_height - 14
+    for line in lines:
+        receipt_canvas.drawString(4 * mm, y, line[:60])
+        y -= 10
+    receipt_canvas.save()
     output.seek(0)
     return output
 
@@ -535,13 +815,8 @@ def build_receipt_html(receipt):
         "</tr>"
         for item in payments
     )
-    business_html = (
-        f"<strong>{html_text(business['name'])}</strong>"
-        + "".join(
-            f"<span>{html_text(line)}</span>"
-            for line in business_lines[1:]
-            if line
-        )
+    business_html = f"<strong>{html_text(business['name'])}</strong>" + "".join(
+        f"<span>{html_text(line)}</span>" for line in business_lines[1:] if line
     )
     sale_date = datetime.fromisoformat(sale["sale_date"])
     sale_date = timezone.localtime(sale_date).strftime("%d/%m/%Y %H:%M")
@@ -550,7 +825,7 @@ def build_receipt_html(receipt):
         payments_html = (
             "<h3>Payments</h3>"
             "<table><thead><tr><th>Method</th><th>Reference</th>"
-            "<th class=\"numeric\">Amount</th></tr></thead><tbody>"
+            '<th class="numeric">Amount</th></tr></thead><tbody>'
             f"{payment_rows}</tbody></table>"
         )
 

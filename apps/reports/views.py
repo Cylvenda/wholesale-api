@@ -11,15 +11,19 @@ from .serializers import BusinessDetailsSerializer, ReportSettingsSerializer
 from .services import (
     build_purchases_excel,
     build_receipt_data,
-    build_receipt_pdf,
+    build_purchase_receipt_data,
     build_sales_excel,
+    build_thermal_receipt_pdf,
     parse_report_date,
 )
 from ..sales.models import Sale
+from ..purchases.models import Purchase
 
 
 class BusinessDetailsViewSet(ModelViewSet):
-    queryset = BusinessDetails.objects.select_related("created_by").order_by("-created_at")
+    queryset = BusinessDetails.objects.select_related("created_by").order_by(
+        "-created_at"
+    )
     serializer_class = BusinessDetailsSerializer
     lookup_field = "uuid"
     lookup_url_kwarg = "uuid"
@@ -27,7 +31,9 @@ class BusinessDetailsViewSet(ModelViewSet):
 
 
 class ReportSettingsViewSet(ModelViewSet):
-    queryset = ReportSettings.objects.select_related("created_by").order_by("-created_at")
+    queryset = ReportSettings.objects.select_related("created_by").order_by(
+        "-created_at"
+    )
     serializer_class = ReportSettingsSerializer
     lookup_field = "uuid"
     lookup_url_kwarg = "uuid"
@@ -66,11 +72,7 @@ def export_sales_excel(request):
 @permission_classes([IsAuthenticated])
 def sale_receipt(request, uuid):
     try:
-        sale = (
-            Sale.objects
-            .select_related("customer", "created_by")
-            .get(uuid=uuid)
-        )
+        sale = Sale.objects.select_related("customer", "created_by").get(uuid=uuid)
     except Sale.DoesNotExist as exc:
         raise NotFound("Sale not found.") from exc
 
@@ -81,8 +83,36 @@ def sale_receipt(request, uuid):
     if request.query_params.get("format") == "json":
         return Response({"success": True, "data": receipt}, status=status.HTTP_200_OK)
 
-    response = HttpResponse(build_receipt_pdf(receipt).getvalue(), content_type="application/pdf")
+    response = HttpResponse(
+        build_thermal_receipt_pdf(receipt).getvalue(), content_type="application/pdf"
+    )
     response["Content-Disposition"] = (
-        f'attachment; filename="receipt-{sale.uuid}.pdf"'
+        f'attachment; filename="{receipt["sale"]["receipt_number"]}.pdf"'
+    )
+    return response
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def purchase_receipt(request, uuid):
+    try:
+        purchase = Purchase.objects.select_related("supplier", "created_by").get(
+            uuid=uuid
+        )
+    except Purchase.DoesNotExist as exc:
+        raise NotFound("Purchase not found.") from exc
+
+    if purchase.status != Purchase.Status.COMPLETED:
+        raise ValidationError("Only received purchases can generate receipts.")
+
+    receipt = build_purchase_receipt_data(purchase)
+    if request.query_params.get("format") == "json":
+        return Response({"success": True, "data": receipt}, status=status.HTTP_200_OK)
+
+    response = HttpResponse(
+        build_thermal_receipt_pdf(receipt).getvalue(), content_type="application/pdf"
+    )
+    response["Content-Disposition"] = (
+        f'attachment; filename="{receipt["purchase"]["receipt_number"]}.pdf"'
     )
     return response
