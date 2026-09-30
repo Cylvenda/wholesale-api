@@ -7,12 +7,17 @@ from rest_framework.response import Response
 
 from .models import Purchase, PurchaseItem
 from .serializers import PurchaseSerializer
+from config.reference_codes import format_reference
 from ..stock.models import StockMovement
 from ..stock.services import add_stock, remove_stock
 
 
 class PurchaseViewSet(viewsets.ModelViewSet):
-    queryset = Purchase.objects.prefetch_related("items").select_related("supplier").order_by("-created_at")
+    queryset = (
+        Purchase.objects.prefetch_related("items")
+        .select_related("supplier")
+        .order_by("-created_at")
+    )
     serializer_class = PurchaseSerializer
     lookup_field = "uuid"
     lookup_url_kwarg = "uuid"
@@ -26,9 +31,8 @@ class PurchaseViewSet(viewsets.ModelViewSet):
         if self.request.user.is_authenticated:
             validated_data["created_by"] = self.request.user
 
-        purchase = Purchase.objects.create(
-            **validated_data
-        )
+        purchase = Purchase.objects.create(**validated_data)
+        reference = format_reference("PUR", purchase.pk)
 
         total = Decimal("0.00")
 
@@ -45,16 +49,16 @@ class PurchaseViewSet(viewsets.ModelViewSet):
                 quantity=quantity,
                 unit_cost=unit_cost,
                 subtotal=subtotal,
-                created_by=self.request.user
+                created_by=self.request.user,
             )
 
             add_stock(
                 product=product,
                 quantity=quantity,
                 movement_type=StockMovement.MovementTypes.PURCHASES,
-                reference=str(purchase.uuid),
-                note=f"Purchase {purchase.uuid}",
-                user=self.request.user
+                reference=reference,
+                note=f"Purchase {reference}",
+                user=self.request.user,
             )
 
             total += subtotal
@@ -62,9 +66,7 @@ class PurchaseViewSet(viewsets.ModelViewSet):
         purchase.total = total
         purchase.status = Purchase.Status.COMPLETED
 
-        purchase.save(
-            update_fields=["total", "status"]
-        )
+        purchase.save(update_fields=["total", "status"])
 
         serializer.instance = purchase
         return purchase
@@ -94,17 +96,15 @@ class PurchaseViewSet(viewsets.ModelViewSet):
 
         # 1. Reverse old purchase items from stock
 
-        old_items = list(
-            purchase.items.select_related("product")
-        )
+        old_items = list(purchase.items.select_related("product"))
 
         for item in old_items:
             remove_stock(
                 product=item.product,
                 quantity=item.quantity,
                 movement_type=StockMovement.MovementTypes.PURCHASE_ADJUSTMENT,
-                reference=str(purchase.uuid),
-                note=f"Reversing previous purchase item {item.uuid}",
+                reference=format_reference("PUR", purchase.pk),
+                note="Reversing previous purchase item",
                 user=self.request.user,
             )
 
@@ -137,8 +137,8 @@ class PurchaseViewSet(viewsets.ModelViewSet):
                 product=product,
                 quantity=quantity,
                 movement_type=StockMovement.MovementTypes.PURCHASE_ADJUSTMENT,
-                reference=str(purchase.uuid),
-                note=f"Purchase {purchase.uuid} updated",
+                reference=format_reference("PUR", purchase.pk),
+                note=f"Purchase {format_reference('PUR', purchase.pk)} updated",
                 user=self.request.user,
             )
 
@@ -147,58 +147,35 @@ class PurchaseViewSet(viewsets.ModelViewSet):
         purchase.total = total
         purchase.status = Purchase.Status.COMPLETED
 
-        purchase.save(
-            update_fields=["total", "status"]
-        )
+        purchase.save(update_fields=["total", "status"])
 
-    @action(
-        detail=True,
-        methods=["post"],
-        url_path="cancel"
-    )
+    @action(detail=True, methods=["post"], url_path="cancel")
     @transaction.atomic
     def cancel(self, request, uuid=None):
         purchase = self.get_object()
 
         if purchase.status == Purchase.Status.CANCELLED:
-            raise ValidationError(
-                "This purchase has already been cancelled."
-            )
+            raise ValidationError("This purchase has already been cancelled.")
 
         if purchase.status != Purchase.Status.COMPLETED:
-            raise ValidationError(
-                "Only completed purchases can be cancelled."
-            )
+            raise ValidationError("Only completed purchases can be cancelled.")
 
-        user = (
-            request.user
-            if request.user.is_authenticated
-            else None
-        )
+        user = request.user if request.user.is_authenticated else None
 
         for item in purchase.items.select_related("product"):
             remove_stock(
                 product=item.product,
                 quantity=item.quantity,
-                movement_type=(
-                    StockMovement
-                    .MovementTypes
-                    .CANCEL
-                ),
-                reference=str(purchase.uuid),
-                note=f"Purchase {purchase.uuid} cancelled",
+                movement_type=(StockMovement.MovementTypes.CANCEL),
+                reference=format_reference("PUR", purchase.pk),
+                note=f"Purchase {format_reference('PUR', purchase.pk)} cancelled",
                 user=user,
             )
 
         purchase.status = Purchase.Status.CANCELLED
         purchase.save(update_fields=["status"])
 
-        return Response(
-            PurchaseSerializer(
-                purchase,
-                context={"request": request}
-            ).data
-        )
+        return Response(PurchaseSerializer(purchase, context={"request": request}).data)
 
     def perform_destroy(self, instance):
         raise ValidationError("Purchases are immutable. Use the cancel action instead.")

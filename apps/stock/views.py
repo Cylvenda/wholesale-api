@@ -12,7 +12,6 @@ from .serializers import StockMovementSerializer, StockSerializer
 from .services import add_stock, remove_stock
 from ..products.models import Product
 
-
 # Movement types that increase stock.
 INCREASE_TYPES = {
     StockMovement.MovementTypes.INITIAL,
@@ -33,7 +32,9 @@ DECREASE_TYPES = {
 
 
 class StockViewSet(ReadOnlyModelViewSet):
-    queryset = Stock.objects.select_related("product").order_by("-product__name")
+    queryset = Stock.objects.select_related("product", "product__unit").order_by(
+        "-product__name"
+    )
     serializer_class = StockSerializer
     lookup_field = "uuid"
     permission_classes = [IsAuthenticated]
@@ -43,32 +44,28 @@ class StockViewSet(ReadOnlyModelViewSet):
         stocks = Stock.objects.select_related("product")
 
         stocked_products = stocks.filter(quantity__gt=0).count()
-        total_quantity = (
-            stocks.aggregate(total=Sum("quantity"))["total"] or 0
-        )
-        low_stock_items = stocks.filter(
-            quantity__gt=0, quantity__lt=10
-        ).count()
+        total_quantity = stocks.aggregate(total=Sum("quantity"))["total"] or 0
+        low_stock_items = stocks.filter(quantity__gt=0, quantity__lt=10).count()
         out_of_stock_items = stocks.filter(quantity=0).count()
 
         stock_value = 0
         for stock in stocks:
-            stock_value += float(stock.quantity) * float(
-                stock.product.buying_price
-            )
+            stock_value += float(stock.quantity) * float(stock.product.buying_price)
 
-        return Response({
-            "stocked_products": stocked_products,
-            "total_quantity": total_quantity,
-            "low_stock_items": low_stock_items,
-            "out_of_stock_items": out_of_stock_items,
-            "stock_value": stock_value,
-        })
+        return Response(
+            {
+                "stocked_products": stocked_products,
+                "total_quantity": total_quantity,
+                "low_stock_items": low_stock_items,
+                "out_of_stock_items": out_of_stock_items,
+                "stock_value": stock_value,
+            }
+        )
 
 
 class StockMovementViewSet(ModelViewSet):
     queryset = StockMovement.objects.select_related(
-        "stock", "stock__product"
+        "stock", "stock__product", "stock__product__unit"
     ).order_by("-created_at")
     serializer_class = StockMovementSerializer
     lookup_field = "uuid"
@@ -88,35 +85,28 @@ class StockMovementViewSet(ModelViewSet):
                 {"product": "This field is required when creating a movement."}
             )
 
-        if movement_type in INCREASE_TYPES:
-            add_stock(
-                product=product,
-                quantity=quantity,
-                movement_type=movement_type,
-                reference=reference,
-                note=notes,
-                user=user,
-            )
-        elif movement_type in DECREASE_TYPES:
-            remove_stock(
-                product=product,
-                quantity=quantity,
-                movement_type=movement_type,
-                reference=reference,
-                note=notes,
-                user=user,
-            )
-        else:
+        if movement_type not in INCREASE_TYPES | DECREASE_TYPES:
             raise ValidationError(
                 {"movement_type": "This movement type cannot be applied manually."}
             )
 
+        try:
+            stock_operation = (
+                add_stock if movement_type in INCREASE_TYPES else remove_stock
+            )
+            stock_operation(
+                product=product,
+                quantity=quantity,
+                movement_type=movement_type,
+                reference=reference,
+                note=notes,
+                user=user,
+            )
+        except ValueError as exc:
+            raise ValidationError({"quantity": str(exc)}) from exc
+
     def perform_update(self, serializer):
-        raise ValidationError(
-            "Stock movements cannot be modified."
-        )
+        raise ValidationError("Stock movements cannot be modified.")
 
     def perform_destroy(self, instance):
-        raise ValidationError(
-            "Stock movements cannot be deleted."
-        )
+        raise ValidationError("Stock movements cannot be deleted.")

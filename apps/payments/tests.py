@@ -29,12 +29,14 @@ class PaymentAPITests(TestCase):
         )
 
     def test_payment_amount_must_be_positive(self):
-        serializer = PaymentSerializer(data={
-            "sale": str(self.sale.uuid),
-            "amount": "-1.00",
-            "method": "cash",
-            "payment_date": timezone.now(),
-        })
+        serializer = PaymentSerializer(
+            data={
+                "sale": str(self.sale.uuid),
+                "amount": "-1.00",
+                "method": "cash",
+                "payment_date": timezone.now(),
+            }
+        )
 
         self.assertFalse(serializer.is_valid())
         self.assertIn("amount", serializer.errors)
@@ -58,6 +60,7 @@ class PaymentAPITests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["reference_code"], f"PAY-{payment.pk:06d}")
         payment.refresh_from_db()
         self.sale.refresh_from_db()
         self.assertEqual(payment.amount, Decimal("100.00"))

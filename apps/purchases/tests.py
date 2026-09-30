@@ -20,14 +20,12 @@ class PurchaseAPITests(TestCase):
             password="safe-password-123",
             role=User.Roles.MANAGER,
         )
-        self.category = Category.objects.create(
-            name="Beer", created_by=self.user
-        )
+        self.category = Category.objects.create(name="Beer", created_by=self.user)
         self.brand = Brand.objects.create(
             name="Kilimanjaro", category=self.category, created_by=self.user
         )
         self.unit = Unit.objects.create(
-            name="Bottle", created_by=self.user
+            name="Bottle", abbreviation="BTL", created_by=self.user
         )
         self.product = Product.objects.create(
             brand=self.brand,
@@ -69,9 +67,19 @@ class PurchaseAPITests(TestCase):
         purchase = Purchase.objects.get()
         self.assertEqual(purchase.total, Decimal("10000.00"))
         self.assertEqual(purchase.status, Purchase.Status.COMPLETED)
+        reference_code = f"PUR-{purchase.pk:06d}"
+        self.assertEqual(response.data["reference_code"], reference_code)
 
         stock = Stock.objects.get(product=self.product)
         self.assertEqual(stock.quantity, 10)
+
+        movement = self.client.get("/api/stock-movements/").data["results"][0]
+        self.assertEqual(movement["reference"], reference_code)
+        self.assertEqual(movement["unit_name"], "Bottle (BTL)")
+        self.assertNotIn(str(purchase.uuid), movement["notes"])
+
+        stock_data = self.client.get("/api/stocks/").data["results"][0]
+        self.assertEqual(stock_data["unit_name"], "Bottle (BTL)")
 
     def test_destroy_is_not_allowed(self):
         purchase = Purchase.objects.create(

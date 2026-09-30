@@ -8,6 +8,7 @@ from uuid import UUID
 from django.db.models import Prefetch
 from django.http import HttpResponse
 from django.utils import timezone
+from config.reference_codes import format_reference
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -221,7 +222,9 @@ def build_purchases_excel(
     )
 
     for purchase in purchases:
-        purchase_number = purchase.invoice_number or f"PUR-{purchase.uuid}"
+        purchase_number = purchase.invoice_number or format_reference(
+            "PUR", purchase.pk
+        )
         for item in purchase.report_items:
             worksheet.append(
                 [
@@ -288,7 +291,7 @@ def build_sales_excel(
     )
 
     for sale in sales:
-        receipt_number = f"SAL-{sale.uuid}"
+        receipt_number = format_reference("SAL", sale.pk)
         discounts = allocate_discount(sale.report_items, sale.discount)
         for item, line_discount in zip(sale.report_items, discounts):
             worksheet.append(

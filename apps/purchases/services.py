@@ -1,4 +1,5 @@
 from django.db import transaction
+from config.reference_codes import format_reference
 
 from ..stock.models import StockMovement
 from ..stock.services import add_stock, remove_stock
@@ -23,7 +24,7 @@ class PurchaseService:
         new_quantity = purchase_item.quantity
         new_product = purchase_item.product
 
-        reference = str(purchase_item.purchase.uuid)
+        reference = format_reference("PUR", purchase_item.purchase.pk)
 
         # Only completed purchases affect stock.
         if purchase_item.purchase.status != purchase_item.purchase.Status.COMPLETED:
@@ -35,7 +36,7 @@ class PurchaseService:
                 quantity=old_quantity,
                 movement_type=StockMovement.MovementTypes.PURCHASE_ADJUSTMENT,
                 reference=reference,
-                note=f"Reversing previous purchase item {purchase_item.uuid}",
+                note="Reversing previous purchase item",
                 user=user,
             )
 
@@ -44,7 +45,7 @@ class PurchaseService:
                 quantity=new_quantity,
                 movement_type=StockMovement.MovementTypes.PURCHASE_ADJUSTMENT,
                 reference=reference,
-                note=f"Purchase {purchase_item.purchase.uuid} updated",
+                note=f"Purchase {reference} updated",
                 user=user,
             )
 
@@ -57,7 +58,7 @@ class PurchaseService:
                     quantity=difference,
                     movement_type=StockMovement.MovementTypes.PURCHASE_ADJUSTMENT,
                     reference=reference,
-                    note=f"Purchase {purchase_item.purchase.uuid} increased",
+                    note=f"Purchase {reference} increased",
                     user=user,
                 )
 
@@ -67,6 +68,6 @@ class PurchaseService:
                     quantity=abs(difference),
                     movement_type=StockMovement.MovementTypes.PURCHASE_ADJUSTMENT,
                     reference=reference,
-                    note=f"Purchase {purchase_item.purchase.uuid} decreased",
+                    note=f"Purchase {reference} decreased",
                     user=user,
                 )
