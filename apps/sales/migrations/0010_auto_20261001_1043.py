@@ -13,11 +13,14 @@ def migrate_sale_items(apps, schema_editor):
     default_user = User.objects.first()
 
     for item in SaleItem.objects.all():
-        # Find the Unit by UUID
-        try:
-            unit = Unit.objects.get(uuid=item.unit_uuid)
-        except Unit.DoesNotExist:
-            # Fallback to product's base unit
+        # Find the Unit by UUID.
+        # Old records may have an empty or invalid unit_uuid.
+        if item.unit_uuid:
+            try:
+                unit = Unit.objects.get(uuid=item.unit_uuid)
+            except (Unit.DoesNotExist, ValueError):
+                unit = item.product.base_unit
+        else:
             unit = item.product.base_unit
 
         # Find or create the ProductUnit for this product and unit
@@ -33,6 +36,7 @@ def migrate_sale_items(apps, schema_editor):
                 "created_by": default_user,
             },
         )
+
         if not created:
             # Update with the conversion factor used historically
             product_unit.conversion_factor = item.unit_quantity or 1
@@ -46,7 +50,9 @@ def migrate_sale_items(apps, schema_editor):
         item.product_unit = product_unit
         item.sale_type = sale_type
         item.conversion_factor_used = product_unit.conversion_factor
-        item.base_quantity = (item.quantity or 0) * (product_unit.conversion_factor or 1)
+        item.base_quantity = (item.quantity or 0) * (
+            product_unit.conversion_factor or 1
+        )
         item.unit_name = item.unit_name or product_unit.unit.name
         item.unit_abbreviation = product_unit.unit.abbreviation or ""
         item.product_name = item.product.name
