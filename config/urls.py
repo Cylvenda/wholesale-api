@@ -23,7 +23,6 @@ urlpatterns = [
                 path("api/", include("apps.reports.urls")),
                 path("api/", include("apps.stock.urls")),
                 path("api/", include("apps.suppliers.urls")),
-                path("api/", include("apps.expenses.urls")),
 
                 # Dashboard analytics
                 path("api/dashboard/", dashboard_stats, name="dashboard-stats"),

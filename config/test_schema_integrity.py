@@ -2,12 +2,12 @@
 
 Django compares models against migration *state*, so ``makemigrations --check``
 stays silent when a database was created from an older revision of a model and
-then recorded as already migrated. ``expenses_expense`` drifted that way: it had
-no ``uuid``, ``created_at``, ``updated_at`` or ``created_by_id``, and the first
+then recorded as already migrated. One table drifted exactly that way: it kept
+an older shape while the migration record claimed it was current, and the first
 symptom was an unrelated ``no such column`` 500 while deleting a user.
 
-These tests read the real tables through ``PRAGMA table_info`` and compare them
-with what the models declare.
+These tests read the real tables through the database's own introspection and
+compare them with what the models declare.
 """
 
 from django.apps import apps
