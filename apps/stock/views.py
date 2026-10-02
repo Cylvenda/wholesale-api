@@ -1,112 +1,172 @@
-from django.db import transaction
-from django.db.models import Sum
-from rest_framework import serializers
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet
+from rest_framework.permissions import IsAuthenticated
 
 from .models import Stock, StockMovement
-from .serializers import StockMovementSerializer, StockSerializer
-from .services import add_stock, remove_stock
-from ..products.models import Product
-
-# Movement types that increase stock.
-INCREASE_TYPES = {
-    StockMovement.MovementTypes.INITIAL,
-    StockMovement.MovementTypes.PURCHASES,
-    StockMovement.MovementTypes.RETURN,
-    StockMovement.MovementTypes.STOCKTAKE_SURPLUS,
-    StockMovement.MovementTypes.CANCEL,
-    StockMovement.MovementTypes.PURCHASE_ADJUSTMENT,
-}
-
-# Movement types that decrease stock.
-DECREASE_TYPES = {
-    StockMovement.MovementTypes.SALES,
-    StockMovement.MovementTypes.DAMAGES,
-    StockMovement.MovementTypes.SALES_ADJUSTMENT,
-    StockMovement.MovementTypes.STOCKTAKE_LOSS,
-}
+from .serializers import (
+    StockAdjustmentSerializer,
+    StockMovementSerializer,
+    StockSerializer,
+    UnitAvailabilitySerializer,
+)
+from config.reference_codes import format_reference
+from .services import (
+    add_stock,
+    availability,
+    convert_to_base_quantity,
+    remove_stock,
+    stock_value,
+)
+from ..products.models import Product, ProductUnit
 
 
-class StockViewSet(ReadOnlyModelViewSet):
-    queryset = Stock.objects.select_related("product", "product__unit").order_by(
-        "-product__name"
+class StockViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = (
+        Stock.objects.select_related("product", "product__base_unit")
+        .order_by("product__name")
     )
     serializer_class = StockSerializer
     lookup_field = "uuid"
+    lookup_url_kwarg = "uuid"
     permission_classes = [IsAuthenticated]
 
-    @action(detail=False, methods=["get"])
+    @action(detail=False, methods=["get"], url_path="summary")
     def summary(self, request):
-        stocks = Stock.objects.select_related("product")
-
-        stocked_products = stocks.filter(quantity__gt=0).count()
-        total_quantity = stocks.aggregate(total=Sum("quantity"))["total"] or 0
+        stocks = self.get_queryset().select_related("product__base_unit")
+        stocked_products = stocks.exclude(quantity=0).count()
+        total_quantity = sum(int(s.quantity) for s in stocks)
         low_stock_items = stocks.filter(quantity__gt=0, quantity__lt=10).count()
         out_of_stock_items = stocks.filter(quantity=0).count()
+        # Stock is counted in base units, so it is valued with the base unit's
+        # own configured buying price rather than any pack price.
+        stock_value_total = stock_value(stocks)
 
-        stock_value = 0
-        for stock in stocks:
-            stock_value += float(stock.quantity) * float(stock.product.buying_price)
+        return Response({
+            "stocked_products": stocked_products,
+            "total_quantity": total_quantity,
+            "low_stock_items": low_stock_items,
+            "out_of_stock_items": out_of_stock_items,
+            "stock_value": str(stock_value_total),
+        })
 
-        return Response(
-            {
-                "stocked_products": stocked_products,
-                "total_quantity": total_quantity,
-                "low_stock_items": low_stock_items,
-                "out_of_stock_items": out_of_stock_items,
-                "stock_value": stock_value,
-            }
-        )
+    @action(detail=False, methods=["get"], url_path="availability")
+    def availability(self, request):
+        """Stock expressed in the selected selling unit.
 
+        ``GET /api/stocks/availability/?product=<uuid>&unit=<uuid>``
 
-class StockMovementViewSet(ModelViewSet):
-    queryset = StockMovement.objects.select_related(
-        "stock", "stock__product", "stock__product__unit"
-    ).order_by("-created_at")
-    serializer_class = StockMovementSerializer
-    lookup_field = "uuid"
-    permission_classes = [IsAuthenticated]
+        Without ``unit`` every active unit configured for the product is
+        returned, so the client always renders the same numbers the backend
+        validates against.
+        """
+        product_uuid = request.query_params.get("product")
+        unit_uuid = request.query_params.get("unit")
 
-    @transaction.atomic
-    def perform_create(self, serializer):
-        product = serializer.validated_data.pop("product", None)
-        movement_type = serializer.validated_data["movement_type"]
-        quantity = serializer.validated_data["quantity"]
-        reference = serializer.validated_data.get("reference", "")
-        notes = serializer.validated_data.get("notes", "")
-        user = self.request.user
-
-        if product is None:
-            raise ValidationError(
-                {"product": "This field is required when creating a movement."}
-            )
-
-        if movement_type not in INCREASE_TYPES | DECREASE_TYPES:
-            raise ValidationError(
-                {"movement_type": "This movement type cannot be applied manually."}
-            )
+        if not product_uuid:
+            raise ValidationError({"product": "This query parameter is required."})
 
         try:
-            stock_operation = (
-                add_stock if movement_type in INCREASE_TYPES else remove_stock
-            )
-            stock_operation(
-                product=product,
-                quantity=quantity,
-                movement_type=movement_type,
-                reference=reference,
-                note=notes,
-                user=user,
-            )
-        except ValueError as exc:
-            raise ValidationError({"quantity": str(exc)}) from exc
+            product = Product.objects.select_related("base_unit").get(uuid=product_uuid)
+        except (Product.DoesNotExist, ValueError, TypeError) as exc:
+            raise ValidationError({"product": "Product not found."}) from exc
 
-    def perform_update(self, serializer):
-        raise ValidationError("Stock movements cannot be modified.")
+        if not product.is_active:
+            raise ValidationError({"product": f"{product.name} is not an active product."})
 
-    def perform_destroy(self, instance):
-        raise ValidationError("Stock movements cannot be deleted.")
+        product_units = list(
+            ProductUnit.objects.filter(product=product, is_active=True)
+            .select_related("unit")
+            .order_by("conversion_factor")
+        )
+
+        if unit_uuid:
+            selected = next((pu for pu in product_units if str(pu.uuid) == unit_uuid), None)
+            if selected is None:
+                raise ValidationError(
+                    {"unit": "Selected unit is not configured for this product."}
+                )
+            product_units = [selected]
+
+        payload = [availability(product, pu) for pu in product_units]
+        serializer = UnitAvailabilitySerializer(payload, many=True)
+        return Response(serializer.data)
+
+
+class StockMovementViewSet(viewsets.ModelViewSet):
+    queryset = (
+        StockMovement.objects.select_related("stock__product", "transaction_unit", "base_unit")
+        .order_by("-created_at")
+    )
+    serializer_class = StockMovementSerializer
+    lookup_field = "uuid"
+    lookup_url_kwarg = "uuid"
+    permission_classes = [IsAuthenticated]
+    http_method_names = ["get", "post", "head", "options"]
+
+    def create(self, request, *args, **kwargs):
+        """Stocktake adjustments are created through the adjust serializer."""
+        return self.adjust(request)
+
+    @action(detail=False, methods=["post"], url_path="adjust")
+    def adjust(self, request):
+        serializer = StockAdjustmentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        data = serializer.validated_data
+        product = data["product"]
+        product_unit = data["product_unit"]
+        movement_type = data["movement_type"]
+        quantity = data["quantity"]
+        notes = data.get("notes", "")
+        user = request.user if request.user.is_authenticated else None
+
+        # The user counted whole units of the selected unit; inventory always
+        # moves in base units, so convert here using the ProductUnit's own factor.
+        base_quantity = convert_to_base_quantity(product_unit, quantity)
+        unit_kwargs = {
+            "transaction_unit": product_unit.unit,
+            "transaction_quantity": quantity,
+            "conversion_factor_used": product_unit.conversion_factor,
+        }
+
+        if movement_type == StockMovement.MovementTypes.STOCKTAKE_SURPLUS:
+            try:
+                stock, movement = add_stock(
+                    product=product,
+                    base_quantity=base_quantity,
+                    movement_type=movement_type,
+                    reference="",
+                    note=notes,
+                    user=user,
+                    **unit_kwargs,
+                )
+            except ValueError as exc:
+                raise ValidationError({"quantity": str(exc)}) from exc
+        elif movement_type == StockMovement.MovementTypes.STOCKTAKE_LOSS:
+            try:
+                stock, movement = remove_stock(
+                    product=product,
+                    base_quantity=base_quantity,
+                    movement_type=movement_type,
+                    reference="",
+                    note=notes,
+                    user=user,
+                    **unit_kwargs,
+                )
+            except ValueError as exc:
+                raise ValidationError({"quantity": str(exc)}) from exc
+        else:
+            raise ValidationError("Invalid movement type for adjustment.")
+
+        # Stocktakes have no document to reference, so the movement gets the
+        # same automatic code every other transaction carries.
+        if not movement.reference:
+            movement.reference = format_reference("ADJ", movement.pk)
+            movement.save(update_fields=["reference"])
+
+        return Response(
+            StockMovementSerializer(movement, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )

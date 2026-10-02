@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db.models import Sum
 
 from rest_framework.decorators import action
@@ -5,6 +7,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
 
+from config.money import to_money
 from .models import Customer
 from .serializers import CustomerSerializer
 
@@ -30,9 +33,8 @@ class CustomerViewSet(ModelViewSet):
             status=Sale.Status.COMPLETED,
         )
 
-        total_sales = (
+        total_sales = to_money(
             completed_sales.aggregate(total=Sum("total"))["total"]
-            or 0
         )
 
         unpaid_sales = completed_sales.filter(
@@ -43,21 +45,22 @@ class CustomerViewSet(ModelViewSet):
             payment_status=Sale.PaymentStatus.PARTIAL,
         )
 
-        outstanding = 0
+        # Money is summed as Decimal so the customer balance matches the sale
+        # and payment rows exactly, like the receipts and reports do.
+        outstanding = Decimal("0.00")
 
         for sale in unpaid_sales:
-            outstanding += float(sale.total)
+            outstanding += to_money(sale.total)
 
         for sale in partial_sales:
-            paid = (
+            paid = to_money(
                 sale.payments.aggregate(total=Sum("amount"))["total"]
-                or 0
             )
-            outstanding += float(sale.total) - float(paid)
+            outstanding += to_money(sale.total) - paid
 
         return Response({
             "total_customers": total_customers,
             "active_customers": active_customers,
-            "total_sales": total_sales,
-            "outstanding": outstanding,
+            "total_sales": str(total_sales),
+            "outstanding": str(outstanding),
         })

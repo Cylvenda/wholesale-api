@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -9,6 +11,7 @@ from rest_framework.viewsets import ModelViewSet
 
 from .models import Payment
 from .serializers import PaymentSerializer
+from config.money import to_money
 from .services import update_sale_payment_status
 
 from apps.sales.models import Sale
@@ -29,17 +32,14 @@ class PaymentViewSet(ModelViewSet):
     def summary(self, request):
         today = timezone.now().date()
 
-        today_payments = (
+        today_payments = to_money(
             Payment.objects
             .filter(payment_date__date=today)
             .aggregate(total=Sum("amount"))["total"]
-            or 0
         )
 
-        total_paid = (
-            Payment.objects
-            .aggregate(total=Sum("amount"))["total"]
-            or 0
+        total_paid = to_money(
+            Payment.objects.aggregate(total=Sum("amount"))["total"]
         )
 
         completed_sales = Sale.objects.filter(
@@ -50,21 +50,23 @@ class PaymentViewSet(ModelViewSet):
             paid=Sum("payments__amount")
         )
 
-        outstanding = 0
+        # Money is summed as Decimal: floats would drift away from the exact
+        # amounts recorded on the sale and its payments.
+        outstanding = Decimal("0.00")
         pending_count = 0
 
         for sale in paid_amounts:
-            paid = sale.paid or 0
+            paid = to_money(sale.paid)
             if sale.payment_status == Sale.PaymentStatus.UNPAID:
-                outstanding += float(sale.total) - float(paid)
+                outstanding += to_money(sale.total) - paid
                 pending_count += 1
             elif sale.payment_status == Sale.PaymentStatus.PARTIAL:
-                outstanding += float(sale.total) - float(paid)
+                outstanding += to_money(sale.total) - paid
 
         return Response({
-            "today_payments": today_payments,
-            "total_paid": total_paid,
-            "outstanding": outstanding,
+            "today_payments": str(today_payments),
+            "total_paid": str(total_paid),
+            "outstanding": str(outstanding),
             "pending": pending_count,
         })
 
@@ -86,14 +88,11 @@ class PaymentViewSet(ModelViewSet):
 
         amount = serializer.validated_data["amount"]
 
-        paid_amount = (
-            sale.payments.aggregate(
-                total=Sum("amount")
-            )["total"]
-            or 0
+        paid_amount = to_money(
+            sale.payments.aggregate(total=Sum("amount"))["total"]
         )
 
-        outstanding = sale.total - paid_amount
+        outstanding = to_money(sale.total) - paid_amount
 
         if outstanding <= 0:
             raise serializers.ValidationError(
@@ -142,16 +141,13 @@ class PaymentViewSet(ModelViewSet):
             payment.amount
         )
 
-        other_paid = (
-                sale.payments
-                .exclude(pk=payment.pk)
-                .aggregate(
-                    total=Sum("amount")
-                )["total"]
-                or 0
+        other_paid = to_money(
+            sale.payments
+            .exclude(pk=payment.pk)
+            .aggregate(total=Sum("amount"))["total"]
         )
 
-        outstanding = sale.total - other_paid
+        outstanding = to_money(sale.total) - other_paid
 
         if new_amount > outstanding:
             raise serializers.ValidationError({

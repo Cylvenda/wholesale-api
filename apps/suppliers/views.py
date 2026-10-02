@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
 
+from config.money import to_money
 from .models import Supplier
 from .serializers import SupplierSerializer
 
@@ -30,13 +31,12 @@ class SupplierViewSet(ModelViewSet):
             status=Purchase.Status.COMPLETED,
         )
 
-        total_purchases = (
+        total_purchases = to_money(
             completed_purchases.aggregate(total=Sum("total"))["total"]
-            or 0
         )
 
         return Response({
             "total_suppliers": total_suppliers,
             "active_suppliers": active_suppliers,
-            "total_purchases": total_purchases,
+            "total_purchases": str(total_purchases),
         })

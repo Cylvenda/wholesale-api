@@ -10,19 +10,23 @@ class PurchaseService:
 
     @staticmethod
     @transaction.atomic
-    def update_purchase_item(purchase_item, old_quantity, old_product, user=None):
+    def update_purchase_item(purchase_item, old_base_quantity, old_product, user=None):
         """
         Adjust stock when a purchase item is updated.
 
         - If the product changed, reverse the old allocation and apply the new one.
         - If the product stayed the same, only adjust the difference.
 
+        ``old_base_quantity`` is always a whole number of base units; the
+        conversion has already been applied by the caller.
+
         Draft purchases do not affect stock; only completed purchases
         trigger stock adjustments.
         """
 
-        new_quantity = purchase_item.quantity
+        new_base_quantity = int(purchase_item.base_quantity)
         new_product = purchase_item.product
+        old_base_quantity = int(old_base_quantity)
 
         reference = format_reference("PUR", purchase_item.purchase.pk)
 
@@ -33,7 +37,7 @@ class PurchaseService:
         if old_product != new_product:
             remove_stock(
                 product=old_product,
-                quantity=old_quantity,
+                base_quantity=old_base_quantity,
                 movement_type=StockMovement.MovementTypes.PURCHASE_ADJUSTMENT,
                 reference=reference,
                 note="Reversing previous purchase item",
@@ -42,7 +46,7 @@ class PurchaseService:
 
             add_stock(
                 product=new_product,
-                quantity=new_quantity,
+                base_quantity=new_base_quantity,
                 movement_type=StockMovement.MovementTypes.PURCHASE_ADJUSTMENT,
                 reference=reference,
                 note=f"Purchase {reference} updated",
@@ -50,12 +54,12 @@ class PurchaseService:
             )
 
         else:
-            difference = new_quantity - old_quantity
+            difference = new_base_quantity - old_base_quantity
 
             if difference > 0:
                 add_stock(
                     product=new_product,
-                    quantity=difference,
+                    base_quantity=difference,
                     movement_type=StockMovement.MovementTypes.PURCHASE_ADJUSTMENT,
                     reference=reference,
                     note=f"Purchase {reference} increased",
@@ -65,7 +69,7 @@ class PurchaseService:
             elif difference < 0:
                 remove_stock(
                     product=new_product,
-                    quantity=abs(difference),
+                    base_quantity=abs(difference),
                     movement_type=StockMovement.MovementTypes.PURCHASE_ADJUSTMENT,
                     reference=reference,
                     note=f"Purchase {reference} decreased",

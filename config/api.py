@@ -13,6 +13,7 @@ from apps.purchases.models import Purchase
 from apps.sales.models import Sale
 from apps.stock.models import Stock
 from apps.payments.models import Payment
+from config.money import to_money
 
 
 @api_view(["GET"])
@@ -31,17 +32,19 @@ def dashboard_stats(request):
     total_products = Product.objects.count()
     stock_units = Stock.objects.aggregate(total=Sum("quantity"))["total"] or 0
 
-    sales_value = Sale.objects.filter(
-        status=Sale.Status.COMPLETED
-    ).aggregate(total=Sum("total"))["total"] or 0
+    # Money comes back from SQLite SUM with an unscaled Decimal, so it is
+    # normalised before it is reported as a dashboard figure.
+    sales_value = to_money(
+        Sale.objects.filter(status=Sale.Status.COMPLETED).aggregate(total=Sum("total"))["total"]
+    )
 
     draft_purchases = Purchase.objects.filter(
         status=Purchase.Status.DRAFT
     ).count()
 
-    purchases_value = Purchase.objects.filter(
-        status=Purchase.Status.COMPLETED
-    ).aggregate(total=Sum("total"))["total"] or 0
+    purchases_value = to_money(
+        Purchase.objects.filter(status=Purchase.Status.COMPLETED).aggregate(total=Sum("total"))["total"]
+    )
 
     low_stock_items = Stock.objects.filter(quantity__gt=0, quantity__lt=10).count()
     out_of_stock_items = Stock.objects.filter(quantity=0).count()
@@ -77,14 +80,14 @@ def dashboard_stats(request):
         day_key = entry["day"]
         if hasattr(day_key, "isoformat"):
             day_key = day_key.isoformat()
-        sales_map[str(day_key)] = float(entry["amount"] or 0)
+        sales_map[str(day_key)] = str(to_money(entry["amount"]))
 
     purchases_map = {}
     for entry in purchases_by_day:
         day_key = entry["day"]
         if hasattr(day_key, "isoformat"):
             day_key = day_key.isoformat()
-        purchases_map[str(day_key)] = float(entry["amount"] or 0)
+        purchases_map[str(day_key)] = str(to_money(entry["amount"]))
 
     chart_data = []
     current = week_ago
@@ -93,16 +96,16 @@ def dashboard_stats(request):
         chart_data.append({
             "day": current.strftime("%a"),
             "date": day_str,
-            "amount": sales_map.get(day_str, 0),
-            "purchases": purchases_map.get(day_str, 0),
+            "amount": sales_map.get(day_str, "0.00"),
+            "purchases": purchases_map.get(day_str, "0.00"),
         })
         current += timedelta(days=1)
 
     return Response({
         "total_products": total_products,
         "stock_units": stock_units,
-        "sales_value": sales_value,
-        "purchases_value": purchases_value,
+        "sales_value": str(sales_value),
+        "purchases_value": str(purchases_value),
         "draft_purchases": draft_purchases,
         "low_stock_items": low_stock_items,
         "out_of_stock_items": out_of_stock_items,

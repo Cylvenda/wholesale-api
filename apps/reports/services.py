@@ -178,6 +178,13 @@ def allocate_discount(items, discount):
     return allocations
 
 
+def transaction_unit_label(unit_name, unit_abbreviation, unit_quantity, product_abbreviation, product_name):
+    """Label a transaction line with the unit actually transacted, in its pack size."""
+    if unit_name and (unit_quantity or 1) > 1:
+        return f"{unit_name}" + (f" ({unit_abbreviation})" if unit_abbreviation else "")
+    return product_abbreviation or product_name
+
+
 def build_purchases_excel(
     *, from_date=None, to_date=None, product_uuid=None, supplier_uuid=None
 ):
@@ -187,7 +194,7 @@ def build_purchases_excel(
     supplier_id = validate_uuid(supplier_uuid, "supplier", Supplier)
     start, end = timezone_bounds(from_date, to_date)
 
-    items = PurchaseItem.objects.select_related("product").order_by(
+    items = PurchaseItem.objects.select_related("product", "product_unit__unit").order_by(
         "purchase__purchase_date", "pk"
     )
     purchases = (
@@ -216,6 +223,7 @@ def build_purchases_excel(
             "Supplier",
             "Product",
             "Quantity",
+            "Unit",
             "Unit Cost",
             "Total",
         ]
@@ -233,14 +241,21 @@ def build_purchases_excel(
                     purchase.supplier.name,
                     item.product.name,
                     item.quantity,
+                    transaction_unit_label(
+                        item.unit_name,
+                        item.unit_abbreviation,
+                        item.conversion_factor_used,
+                        item.product.base_unit.abbreviation,
+                        item.product.base_unit.name,
+                    ),
                     item.unit_cost,
                     item.subtotal,
                 ]
             )
             worksheet.cell(worksheet.max_row, 1).number_format = DATE_FORMAT
             worksheet.cell(worksheet.max_row, 5).number_format = "0"
-            worksheet.cell(worksheet.max_row, 6).number_format = MONEY_FORMAT
             worksheet.cell(worksheet.max_row, 7).number_format = MONEY_FORMAT
+            worksheet.cell(worksheet.max_row, 8).number_format = MONEY_FORMAT
 
     style_worksheet(worksheet)
     return excel_response(
@@ -257,7 +272,9 @@ def build_sales_excel(
     customer_id = validate_uuid(customer_uuid, "customer", Customer)
     start, end = timezone_bounds(from_date, to_date)
 
-    items = SaleItem.objects.select_related("product").order_by("sale__sale_date", "pk")
+    items = SaleItem.objects.select_related("product", "product_unit__unit").order_by(
+        "sale__sale_date", "pk"
+    )
     sales = (
         Sale.objects.filter(status=Sale.Status.COMPLETED)
         .select_related("customer")
@@ -284,6 +301,7 @@ def build_sales_excel(
             "Customer",
             "Product",
             "Quantity",
+            "Unit",
             "Unit Price",
             "Discount",
             "Total",
@@ -301,6 +319,13 @@ def build_sales_excel(
                     sale.customer.name,
                     item.product.name,
                     item.quantity,
+                    transaction_unit_label(
+                        item.unit_name,
+                        item.unit_abbreviation,
+                        item.conversion_factor_used,
+                        item.product.base_unit.abbreviation,
+                        item.product.base_unit.name,
+                    ),
                     item.unit_price,
                     line_discount,
                     item.subtotal - line_discount,
@@ -308,7 +333,7 @@ def build_sales_excel(
             )
             worksheet.cell(worksheet.max_row, 1).number_format = DATE_FORMAT
             worksheet.cell(worksheet.max_row, 5).number_format = "0"
-            for column in (6, 7, 8):
+            for column in (7, 8, 9):
                 worksheet.cell(worksheet.max_row, column).number_format = MONEY_FORMAT
 
     style_worksheet(worksheet)
@@ -352,14 +377,17 @@ def get_payment_summary(sale):
 
 def build_receipt_data(sale):
     items = list(
-        sale.items.select_related("product__unit")
+        sale.items.select_related("product", "product_unit__unit")
         .order_by("created_at", "pk")
         .values(
             "uuid",
             "product__name",
-            "product__unit__name",
-            "product__unit__abbreviation",
+            "product__base_unit__name",
+            "product__base_unit__abbreviation",
             "quantity",
+            "unit_name",
+            "unit_abbreviation",
+            "conversion_factor_used",
             "unit_price",
             "subtotal",
         )
@@ -390,8 +418,13 @@ def build_receipt_data(sale):
                 "uuid": str(item["uuid"]),
                 "product_name": item["product__name"],
                 "quantity": item["quantity"],
-                "unit": item["product__unit__abbreviation"]
-                or item["product__unit__name"],
+                "unit": transaction_unit_label(
+                    item["unit_name"],
+                    item["unit_abbreviation"],
+                    item["conversion_factor_used"],
+                    item["product__base_unit__abbreviation"],
+                    item["product__base_unit__name"],
+                ),
                 "unit_price": item["unit_price"],
                 "line_total": item["subtotal"],
             }
@@ -412,7 +445,7 @@ def build_receipt_data(sale):
 
 def build_purchase_receipt_data(purchase):
     items = list(
-        purchase.items.select_related("product__unit").order_by("created_at", "pk")
+        purchase.items.select_related("product", "product_unit__unit").order_by("created_at", "pk")
     )
     business = get_active_business_details()
     subtotal = sum((item.subtotal for item in items), Decimal("0.00"))
@@ -438,7 +471,13 @@ def build_purchase_receipt_data(purchase):
                 "uuid": str(item.uuid),
                 "product_name": item.product.name,
                 "quantity": item.quantity,
-                "unit": item.product.unit.abbreviation or item.product.unit.name,
+                "unit": transaction_unit_label(
+                    item.unit_name,
+                    item.unit_abbreviation,
+                    item.conversion_factor_used,
+                    item.product.base_unit.abbreviation,
+                    item.product.base_unit.name,
+                ),
                 "unit_price": item.unit_cost,
                 "line_total": item.subtotal,
             }
@@ -748,10 +787,10 @@ def build_thermal_receipt_pdf(receipt):
     lines.extend([separator, "DESC                 U.PRICE    DISC     AMOUNT", "QTY"])
     for item in receipt["items"]:
         add_wrapped(item["product_name"])
-        quantity = f"{item['quantity']:,.2f} {item['unit']}"
+        quantity = f"{int(item['quantity']):,} {item['unit']}"
         amount_line = (
             f"{quantity:>13} {money(item['unit_price']):>9} "
-            f"{money(item['discount']):>7} {money(item['line_total']):>9}"
+            f"{money(item.get('discount', 0)):>7} {money(item['line_total']):>9}"
         )
         add_wrapped(amount_line)
     lines.append(separator)
@@ -801,7 +840,7 @@ def build_receipt_html(receipt):
     item_rows = "".join(
         "<tr>"
         f"<td>{html_text(item['product_name'])}</td>"
-        f"<td class=\"numeric\">{html_text(item['quantity'])}</td>"
+        f"<td class=\"numeric\">{html_text(item['quantity'])} {html_text(item['unit'])}</td>"
         f"<td class=\"numeric\">{money(item['unit_price'])}</td>"
         f"<td class=\"numeric\">{money(item['line_total'])}</td>"
         "</tr>"
