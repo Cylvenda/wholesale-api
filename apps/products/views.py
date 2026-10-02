@@ -1,8 +1,9 @@
 from django.db import transaction
-from django.db.models import ProtectedError
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.viewsets import ModelViewSet
+
+from config.destroy import SafeDestroyMixin
 from .models import Category, Product, Brand, Unit, ProductUnit
 from .serializers import (
     CategorySerializer,
@@ -17,7 +18,7 @@ from ..sales.models import SaleItem
 from ..stock.models import Stock, StockMovement
 
 
-class CategoryViewSet(ModelViewSet):
+class CategoryViewSet(SafeDestroyMixin, ModelViewSet):
     queryset = Category.objects.all().order_by("-created_at")
     serializer_class = CategorySerializer
     lookup_field = "uuid"
@@ -25,7 +26,7 @@ class CategoryViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
 
 
-class BrandViewSet(ModelViewSet):
+class BrandViewSet(SafeDestroyMixin, ModelViewSet):
     queryset = Brand.objects.all().order_by("-created_at")
     serializer_class = BrandSerializer
     lookup_field = "uuid"
@@ -33,27 +34,15 @@ class BrandViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
 
 
-class UnitViewSet(ModelViewSet):
+class UnitViewSet(SafeDestroyMixin, ModelViewSet):
     queryset = Unit.objects.all().order_by("-created_at")
     serializer_class = UnitSerializer
     lookup_field = "uuid"
     lookup_url_kwarg = "uuid"
     permission_classes = [IsAuthenticated]
 
-    def perform_destroy(self, instance):
-        """Units referenced by products or history are deactivated, never deleted."""
-        try:
-            instance.delete()
-        except ProtectedError as exc:
-            raise ValidationError(
-                {
-                    "detail": "This unit is already in use by products or past transactions. "
-                    "Deactivate it instead."
-                }
-            ) from exc
 
-
-class ProductUnitViewSet(ModelViewSet):
+class ProductUnitViewSet(SafeDestroyMixin, ModelViewSet):
     serializer_class = ProductUnitSerializer
     lookup_field = "uuid"
     lookup_url_kwarg = "uuid"
@@ -66,7 +55,7 @@ class ProductUnitViewSet(ModelViewSet):
         return ProductUnit.objects.all().order_by("conversion_factor")
 
 
-class ProductViewSet(ModelViewSet):
+class ProductViewSet(SafeDestroyMixin, ModelViewSet):
     queryset = Product.objects.all().order_by("-created_at")
     serializer_class = ProductSerializer
     lookup_field = "uuid"
@@ -93,6 +82,47 @@ class ProductViewSet(ModelViewSet):
             notes="Initial stock",
             created_by=self.request.user,
         )
+
+    def destroy_instance(self, instance):
+        """Delete the product, clearing its own stock row when that is safe.
+
+        Creating a product always opens a ``Stock`` row plus an ``INITIAL``
+        movement, and both are ``PROTECT``, so a plain delete could never
+        succeed. A product that was never bought, sold or counted holds nothing
+        worth keeping, so that scaffolding is dropped first. Anything with real
+        history is reported with the reason instead.
+        """
+        stock = getattr(instance, "stock", None)
+        if stock is not None and int(stock.quantity) == 0:
+            has_history = (
+                instance.sale_items.exists()
+                or instance.purchase_items.exists()
+                or stock.movements.exclude(
+                    movement_type=StockMovement.MovementTypes.INITIAL
+                ).exists()
+            )
+            if not has_history:
+                stock.movements.all().delete()
+                stock.delete()
+                instance.delete()
+                return
+
+        if stock is not None:
+            blockers = []
+            if int(stock.quantity) > 0:
+                blockers.append(f"{int(stock.quantity)} units still on hand")
+            if instance.sale_items.exists():
+                blockers.append("recorded sales")
+            if instance.purchase_items.exists():
+                blockers.append("recorded purchases")
+            if blockers:
+                raise ValidationError(
+                    "This product cannot be deleted because it has "
+                    f"{', '.join(blockers)}. Set it to inactive instead so its "
+                    "history stays intact."
+                )
+
+        instance.delete()
 
     @transaction.atomic
     def perform_update(self, serializer):

@@ -11,13 +11,14 @@ from rest_framework.viewsets import ModelViewSet
 
 from .models import Payment
 from .serializers import PaymentSerializer
+from config.destroy import SafeDestroyMixin
 from config.money import to_money
 from .services import update_sale_payment_status
 
 from apps.sales.models import Sale
 
 
-class PaymentViewSet(ModelViewSet):
+class PaymentViewSet(SafeDestroyMixin, ModelViewSet):
     permission_classes = [IsAuthenticated]
     queryset = (
         Payment.objects
@@ -161,9 +162,9 @@ class PaymentViewSet(ModelViewSet):
         serializer.save(sale=sale, customer=sale.customer)
         update_sale_payment_status(sale)
 
-    @transaction.atomic
-    def perform_destroy(self, instance):
-
+    def destroy_instance(self, instance):
+        # SafeDestroyMixin wraps this in a transaction and supplies the
+        # readable error when the delete is blocked.
         sale = (
             Sale.objects
             .select_for_update()

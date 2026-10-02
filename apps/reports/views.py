@@ -6,6 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
 
+from config.destroy import SafeDestroyMixin
 from .models import BusinessDetails, ReportSettings
 from .serializers import BusinessDetailsSerializer, ReportSettingsSerializer
 from .services import (
@@ -20,7 +21,7 @@ from ..sales.models import Sale
 from ..purchases.models import Purchase
 
 
-class BusinessDetailsViewSet(ModelViewSet):
+class BusinessDetailsViewSet(SafeDestroyMixin, ModelViewSet):
     queryset = BusinessDetails.objects.select_related("created_by").order_by(
         "-created_at"
     )
@@ -30,7 +31,7 @@ class BusinessDetailsViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
 
 
-class ReportSettingsViewSet(ModelViewSet):
+class ReportSettingsViewSet(SafeDestroyMixin, ModelViewSet):
     queryset = ReportSettings.objects.select_related("created_by").order_by(
         "-created_at"
     )

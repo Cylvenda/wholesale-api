@@ -7,6 +7,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.viewsets import ModelViewSet
 
+from config.destroy import SafeDestroyMixin
 from config.money import to_money
 from .models import Customer
 from .serializers import CustomerSerializer
@@ -14,7 +15,7 @@ from .serializers import CustomerSerializer
 from apps.sales.models import Sale
 
 
-class CustomerViewSet(ModelViewSet):
+class CustomerViewSet(SafeDestroyMixin, ModelViewSet):
     queryset = Customer.objects.all().order_by("-created_at")
     serializer_class = CustomerSerializer
     lookup_field = "uuid"

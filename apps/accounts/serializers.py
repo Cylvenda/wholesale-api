@@ -9,6 +9,19 @@ from djoser.serializers import (
 from .models import User
 
 
+def sync_staff_flags(user) -> None:
+    """Keep ``is_staff`` aligned with the role the API actually accepts.
+
+    The user form can set ``role="admin"``, but the flag that ``IsAdminUser``
+    and the Django admin check is ``is_staff``. Without this, a promoted admin
+    is refused by the very endpoints their role grants.
+    """
+    should_be_staff = user.role == User.Roles.ADMIN
+    if bool(user.is_staff) != should_be_staff:
+        user.is_staff = should_be_staff
+        user.save(update_fields=["is_staff"])
+
+
 class UserCreateSerializer(BaseUserCreateSerializer):
 
     def validate(self, attrs):
@@ -31,6 +44,11 @@ class UserCreateSerializer(BaseUserCreateSerializer):
             raise serializers.ValidationError({"password": errors})
         return attrs
 
+    def create(self, validated_data):
+        user = super().create(validated_data)
+        sync_staff_flags(user)
+        return user
+
     class Meta(BaseUserCreateSerializer.Meta):
         model = User
         fields = [
@@ -47,6 +65,11 @@ class UserCreateSerializer(BaseUserCreateSerializer):
 
 
 class UserSerializer(BaseUserSerializer):
+
+    def update(self, instance, validated_data):
+        user = super().update(instance, validated_data)
+        sync_staff_flags(user)
+        return user
 
     class Meta(BaseUserSerializer.Meta):
         model = User

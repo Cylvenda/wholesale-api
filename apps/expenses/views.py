@@ -1,11 +1,12 @@
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.viewsets import ModelViewSet
 
+from config.destroy import SafeDestroyMixin
 from .models import Expense, ExpenseCategory
 from .serializers import ExpenseSerializer, ExpenseCategorySerializer
 
 
-class ExpenseCategoryViewSet(ModelViewSet):
+class ExpenseCategoryViewSet(SafeDestroyMixin, ModelViewSet):
     queryset = ExpenseCategory.objects.all().order_by("-created_at")
     serializer_class = ExpenseCategorySerializer
     lookup_field = "uuid"
@@ -13,7 +14,7 @@ class ExpenseCategoryViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
 
 
-class ExpenseViewSet(ModelViewSet):
+class ExpenseViewSet(SafeDestroyMixin, ModelViewSet):
     queryset = Expense.objects.select_related("category").prefetch_related().order_by("-created_at")
     serializer_class = ExpenseSerializer
     lookup_field = "uuid"
@@ -26,5 +27,3 @@ class ExpenseViewSet(ModelViewSet):
     def perform_update(self, serializer):
         serializer.save()
 
-    def perform_destroy(self, instance):
-        instance.delete()
