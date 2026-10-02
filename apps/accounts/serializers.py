@@ -15,8 +15,14 @@ def sync_staff_flags(user) -> None:
     The user form can set ``role="admin"``, but the flag that ``IsAdminUser``
     and the Django admin check is ``is_staff``. Without this, a promoted admin
     is refused by the very endpoints their role grants.
+
+    A superuser is never demoted here: ``createsuperuser`` grants ``is_staff``
+    without setting ``role``, and stripping it would lock them out.
     """
-    should_be_staff = user.role == User.Roles.ADMIN
+    if user.is_superuser:
+        should_be_staff = True
+    else:
+        should_be_staff = user.role == User.Roles.ADMIN
     if bool(user.is_staff) != should_be_staff:
         user.is_staff = should_be_staff
         user.save(update_fields=["is_staff"])
