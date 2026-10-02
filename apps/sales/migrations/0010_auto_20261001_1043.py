@@ -101,11 +101,6 @@ class Migration(migrations.Migration):
         # Step 4: Add snapshot fields
         migrations.AddField(
             model_name="saleitem",
-            name="unit_name",
-            field=models.CharField(max_length=50, default=""),
-        ),
-        migrations.AddField(
-            model_name="saleitem",
             name="unit_abbreviation",
             field=models.CharField(blank=True, max_length=10, default=""),
         ),
