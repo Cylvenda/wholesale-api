@@ -60,6 +60,7 @@ def migrate_sale_items(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
+    atomic = False
 
     dependencies = [
         ('sales', '0009_saleitem_unit_uuid'),
