@@ -4,9 +4,12 @@ from drf_spectacular.views import (SpectacularAPIView, SpectacularSwaggerView, S
 from django.conf.urls.static import static
 from django.conf import settings
 from config.api import dashboard_stats, export_report
+from apps.access_logs.views_auth import AuditedTokenObtainPairView
 
 urlpatterns = [
                path("admin/", admin.site.urls), re_path(r"^api/auth/", include("djoser.urls")),
+               # Replaces djoser's own jwt/create so every sign-in attempt is audited.
+               path("api/auth/jwt/create/", AuditedTokenObtainPairView.as_view(), name="jwt-create"),
                re_path(r"^api/auth/", include("djoser.urls.jwt")),
                path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
                # Swagger UI
@@ -15,6 +18,7 @@ urlpatterns = [
 
                # local apps routes
                 path("api/", include("apps.accounts.urls")),
+                path("api/", include("apps.access_logs.urls")),
                 path("api/", include("apps.customers.urls")),
                 path("api/", include("apps.payments.urls")),
                 path("api/", include("apps.products.urls")),

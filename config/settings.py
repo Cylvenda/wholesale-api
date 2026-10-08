@@ -79,6 +79,7 @@ INSTALLED_APPS = [
     "apps.reports",
     "apps.stock",
     "apps.suppliers",
+    "apps.access_logs",
 ]
 
 MIDDLEWARE = [
@@ -276,3 +277,19 @@ SPECTACULAR_SETTINGS = {
     ),
     "VERSION": "1.0.0",
 }
+
+# --- Access log -----------------------------------------------------------
+# Absolute path to a MaxMind GeoLite2-City .mmdb file. When this is unset or the
+# file is missing, access logs still record the exact IP address, device and
+# browser; only the city/country/coordinates stay blank. Download the database
+# from https://dev.maxmind.com/geoip/geolite2-free-geolocation-data and also
+# add `geoip2` to requirements.txt.
+ACCESS_LOG_GEOIP_DATABASE = os.getenv("ACCESS_LOG_GEOIP_DATABASE", "")
+
+# Reverse proxies whose X-Forwarded-For may be trusted. Left empty, forwarded
+# headers are ignored so a client cannot spoof its own address.
+ACCESS_LOG_TRUSTED_PROXIES = [
+    proxy.strip()
+    for proxy in os.getenv("ACCESS_LOG_TRUSTED_PROXIES", "").split(",")
+    if proxy.strip()
+]
